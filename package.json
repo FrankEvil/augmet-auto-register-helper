@@ -1,0 +1,30 @@
+{
+  "name": "augmentcode-test-api-server",
+  "version": "1.0.0",
+  "description": "测试API服务器，为AugmentCode自动注册脚本提供邮箱和验证码接口",
+  "main": "test-api-server.js",
+  "scripts": {
+    "start": "node test-api-server.js",
+    "dev": "nodemon test-api-server.js",
+    "test": "curl http://localhost:3000/health"
+  },
+  "keywords": [
+    "augmentcode",
+    "api",
+    "test",
+    "email",
+    "verification"
+  ],
+  "author": "AugmentCode Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

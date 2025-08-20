@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AugmentCode自动注册+OAuth令牌获取
 // @namespace    http://tampermonkey.net/
-// @version      2.5.0
+// @version      2.6.0
 // @description  自动完成AugmentCode的注册流程并获取OAuth令牌
 // @author       AugmentCode-AutoRegister-Userscript
 // @match        https://*.augmentcode.com/*
@@ -21,6 +21,8 @@
 // @connect      *.api.augmentcode.com
 // @connect      api.augmentcode.com
 // @connect      augment.daiju.live
+// @connect      localhost
+// @connect      127.0.0.1
 // ==/UserScript==
 
 (function () {
@@ -37,6 +39,31 @@
     username: "test",    // 临时邮箱用户名
     emailExtension: "@mailto.plus", // 临时邮箱扩展域名
     epin: "000"     // 临时邮箱PIN码
+  };
+
+  /**
+   * API邮箱服务配置
+   * 新增的API模式配置
+   */
+  const API_EMAIL_CONFIG = {
+    enabled: false,                    // 是否启用API模式
+    getEmailURL: '',                   // 获取邮箱的API地址
+    getCodeURL: '',                    // 获取验证码的API地址
+    timeout: 10000,                    // 请求超时时间
+    maxRetries: 5,                     // 最大重试次数
+    retryInterval: 3000                // 重试间隔时间
+  };
+
+  /**
+   * 上传配置
+   * 可配置的上传地址和参数
+   */
+  const UPLOAD_CONFIG = {
+    enabled: false,                    // 是否启用自定义上传
+    url: '',                          // 上传地址
+    method: 'POST',                   // 请求方法
+    headers: {},                      // 自定义请求头
+    timeout: 10000                    // 超时时间
   };
 
   // ==================== OAuth 工具集成 ====================
@@ -390,7 +417,25 @@
       captchaWaitTime: GM_getValue('captchaWaitTime', 20), // 验证码模块等待时间（秒）
       suppressTestLogs: GM_getValue('suppressTestLogs', false), // 是否抑制测试日志
       maxRegistrationCount: GM_getValue('maxRegistrationCount', 10), // 最大注册数量，默认10个
-      registrationInterval: GM_getValue('registrationInterval', 60) // 注册间隔时间（秒），默认60秒
+      registrationInterval: GM_getValue('registrationInterval', 60), // 注册间隔时间（秒），默认60秒
+
+      // API邮箱服务配置
+      apiEmailEnabled: GM_getValue('apiEmailEnabled', false),
+      apiEmailGetURL: GM_getValue('apiEmailGetURL', ''),
+      apiEmailCodeURL: GM_getValue('apiEmailCodeURL', ''),
+
+      // 自定义上传配置
+      customUploadEnabled: GM_getValue('customUploadEnabled', false),
+      customUploadURL: GM_getValue('customUploadURL', ''),
+      customUploadMethod: GM_getValue('customUploadMethod', 'POST'),
+
+      // CF验证码处理配置
+      cfCaptchaEnabled: GM_getValue('cfCaptchaEnabled', true),
+      cfCaptchaTimeout: GM_getValue('cfCaptchaTimeout', 120),
+      cfCaptchaAutoRetry: GM_getValue('cfCaptchaAutoRetry', 3),
+
+      // 验证码等待时间配置
+      captchaWaitTime: GM_getValue('captchaWaitTime', 20)
     },
 
     // 状态变化监听器
@@ -422,6 +467,24 @@
         GM_setValue('suppressTestLogs', this.app.suppressTestLogs);
         GM_setValue('maxRegistrationCount', this.app.maxRegistrationCount);
         GM_setValue('registrationInterval', this.app.registrationInterval);
+
+        // 保存API邮箱配置
+        GM_setValue('apiEmailEnabled', this.app.apiEmailEnabled);
+        GM_setValue('apiEmailGetURL', this.app.apiEmailGetURL);
+        GM_setValue('apiEmailCodeURL', this.app.apiEmailCodeURL);
+
+        // 保存自定义上传配置
+        GM_setValue('customUploadEnabled', this.app.customUploadEnabled);
+        GM_setValue('customUploadURL', this.app.customUploadURL);
+        GM_setValue('customUploadMethod', this.app.customUploadMethod);
+
+        // 保存CF验证码配置
+        GM_setValue('cfCaptchaEnabled', this.app.cfCaptchaEnabled);
+        GM_setValue('cfCaptchaTimeout', this.app.cfCaptchaTimeout);
+        GM_setValue('cfCaptchaAutoRetry', this.app.cfCaptchaAutoRetry);
+
+        // 保存验证码等待时间配置
+        GM_setValue('captchaWaitTime', this.app.captchaWaitTime);
 
         // 触发状态变化监听器
         this.notifyListeners();
@@ -455,6 +518,24 @@
         this.app.suppressTestLogs = GM_getValue('suppressTestLogs', false);
         this.app.maxRegistrationCount = GM_getValue('maxRegistrationCount', 10);
         this.app.registrationInterval = GM_getValue('registrationInterval', 60);
+
+        // 加载API邮箱配置
+        this.app.apiEmailEnabled = GM_getValue('apiEmailEnabled', false);
+        this.app.apiEmailGetURL = GM_getValue('apiEmailGetURL', '');
+        this.app.apiEmailCodeURL = GM_getValue('apiEmailCodeURL', '');
+
+        // 加载自定义上传配置
+        this.app.customUploadEnabled = GM_getValue('customUploadEnabled', false);
+        this.app.customUploadURL = GM_getValue('customUploadURL', '');
+        this.app.customUploadMethod = GM_getValue('customUploadMethod', 'POST');
+
+        // 加载CF验证码配置
+        this.app.cfCaptchaEnabled = GM_getValue('cfCaptchaEnabled', true);
+        this.app.cfCaptchaTimeout = GM_getValue('cfCaptchaTimeout', 120);
+        this.app.cfCaptchaAutoRetry = GM_getValue('cfCaptchaAutoRetry', 3);
+
+        // 加载验证码等待时间配置
+        this.app.captchaWaitTime = GM_getValue('captchaWaitTime', 20);
       } catch (error) {
         console.error('状态加载失败:', error);
       }
@@ -577,6 +658,510 @@
   var maxRegistrationCount = StateManager.app.maxRegistrationCount;
   var registrationInterval = StateManager.app.registrationInterval;
 
+  // ==================== API邮箱服务管理器 ====================
+
+  /**
+   * API邮箱服务管理器
+   * 负责通过API获取邮箱和验证码
+   */
+  const APIEmailManager = {
+    /**
+     * 通过API获取邮箱地址
+     */
+    async getEmail() {
+      const { apiEmailEnabled, apiEmailGetURL } = StateManager.app;
+
+      if (!apiEmailEnabled || !apiEmailGetURL) {
+        getLogger().log('❌ API邮箱服务未启用或未配置获取邮箱URL', 'error');
+        return null;
+      }
+
+      try {
+        getLogger().log('📧 开始通过API获取邮箱...', 'info');
+        getLogger().log(`🔗 API地址: ${apiEmailGetURL}`, 'info');
+
+        return new Promise((resolve, reject) => {
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url: apiEmailGetURL,
+            timeout: API_EMAIL_CONFIG.timeout,
+            onload: function(response) {
+              try {
+                getLogger().log(`📨 API响应状态: ${response.status}`, 'info');
+
+                if (response.status === 200) {
+                  const responseData = JSON.parse(response.responseText);
+                  const email = responseData.email || responseData.data?.email || responseData;
+
+                  if (typeof email === 'string' && email.includes('@')) {
+                    getLogger().log(`✅ 成功获取邮箱: ${email}`, 'success');
+                    resolve(email);
+                  } else {
+                    getLogger().log('❌ API返回的邮箱格式无效', 'error');
+                    getLogger().log(`📋 响应内容: ${response.responseText}`, 'error');
+                    resolve(null);
+                  }
+                } else {
+                  getLogger().log(`❌ API请求失败: HTTP ${response.status}`, 'error');
+                  getLogger().log(`📋 错误详情: ${response.responseText}`, 'error');
+                  resolve(null);
+                }
+              } catch (error) {
+                getLogger().log(`❌ 解析API响应失败: ${error.message}`, 'error');
+                resolve(null);
+              }
+            },
+            onerror: function(error) {
+              getLogger().log(`❌ API请求网络错误: ${JSON.stringify(error)}`, 'error');
+              resolve(null);
+            },
+            ontimeout: function() {
+              getLogger().log('❌ API请求超时', 'error');
+              resolve(null);
+            }
+          });
+        });
+      } catch (error) {
+        getLogger().log(`❌ API获取邮箱异常: ${error.message}`, 'error');
+        return null;
+      }
+    },
+
+    /**
+     * 通过API获取验证码
+     */
+    async getVerificationCode(email, maxRetries = 5) {
+      const { apiEmailEnabled, apiEmailCodeURL } = StateManager.app;
+
+      if (!apiEmailEnabled || !apiEmailCodeURL) {
+        getLogger().log('❌ API邮箱服务未启用或未配置获取验证码URL', 'error');
+        return null;
+      }
+
+      if (!email) {
+        getLogger().log('❌ 邮箱地址为空，无法获取验证码', 'error');
+        return null;
+      }
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          getLogger().log(`🔍 尝试获取验证码 (第 ${attempt + 1}/${maxRetries} 次)...`, 'info');
+          getLogger().log(`📧 邮箱: ${email}`, 'info');
+
+          // 构建请求URL，支持参数替换
+          let requestURL = apiEmailCodeURL;
+
+          // 如果URL包含{email}占位符，则替换它
+          if (requestURL.includes('{email}')) {
+            requestURL = requestURL.replace(/{email}/g, encodeURIComponent(email));
+          } else {
+            // 如果没有占位符，则添加email参数
+            requestURL = requestURL.includes('?')
+              ? `${requestURL}&email=${encodeURIComponent(email)}`
+              : `${requestURL}?email=${encodeURIComponent(email)}`;
+          }
+
+          getLogger().log(`🔗 API地址: ${requestURL}`, 'info');
+
+          const code = await new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+              method: 'GET',
+              url: requestURL,
+              timeout: API_EMAIL_CONFIG.timeout,
+              onload: function(response) {
+                try {
+                  getLogger().log(`📨 API响应状态: ${response.status}`, 'info');
+
+                  if (response.status === 200) {
+                    const responseData = JSON.parse(response.responseText);
+                    const code = responseData.code || responseData.data?.code || responseData.verification_code || responseData;
+
+                    if (typeof code === 'string' && /^\d{6}$/.test(code)) {
+                      getLogger().log(`✅ 成功获取验证码: ${code}`, 'success');
+                      resolve(code);
+                    } else if (typeof code === 'string' && code.length > 0) {
+                      // 尝试从响应中提取验证码
+                      const extractedCode = extractVerificationCode(code);
+                      if (extractedCode) {
+                        getLogger().log(`✅ 从响应中提取验证码: ${extractedCode}`, 'success');
+                        resolve(extractedCode);
+                      } else {
+                        getLogger().log('❌ API返回的验证码格式无效', 'error');
+                        getLogger().log(`📋 响应内容: ${response.responseText}`, 'error');
+                        resolve(null);
+                      }
+                    } else {
+                      getLogger().log('❌ API返回的验证码格式无效', 'error');
+                      getLogger().log(`📋 响应内容: ${response.responseText}`, 'error');
+                      resolve(null);
+                    }
+                  } else {
+                    getLogger().log(`❌ API请求失败: HTTP ${response.status}`, 'error');
+                    getLogger().log(`📋 错误详情: ${response.responseText}`, 'error');
+                    resolve(null);
+                  }
+                } catch (error) {
+                  getLogger().log(`❌ 解析API响应失败: ${error.message}`, 'error');
+                  resolve(null);
+                }
+              },
+              onerror: function(error) {
+                getLogger().log(`❌ API请求网络错误: ${JSON.stringify(error)}`, 'error');
+                resolve(null);
+              },
+              ontimeout: function() {
+                getLogger().log('❌ API请求超时', 'error');
+                resolve(null);
+              }
+            });
+          });
+
+          if (code) {
+            return code;
+          }
+
+          if (attempt < maxRetries - 1) {
+            getLogger().log(`⏳ 等待 ${API_EMAIL_CONFIG.retryInterval/1000} 秒后重试...`, 'info');
+            await new Promise(resolve => setTimeout(resolve, API_EMAIL_CONFIG.retryInterval));
+          }
+        } catch (error) {
+          getLogger().log(`❌ API获取验证码异常: ${error.message}`, 'error');
+          if (attempt < maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, API_EMAIL_CONFIG.retryInterval));
+          }
+        }
+      }
+
+      getLogger().log('❌ 所有重试都失败了，无法获取验证码', 'error');
+      return null;
+    },
+
+    /**
+     * 测试API连接
+     */
+    async testConnection() {
+      const { apiEmailEnabled, apiEmailGetURL, apiEmailCodeURL } = StateManager.app;
+
+      if (!apiEmailEnabled) {
+        getLogger().log('❌ API邮箱服务未启用', 'error');
+        return false;
+      }
+
+      let success = true;
+
+      // 测试获取邮箱API
+      if (apiEmailGetURL) {
+        getLogger().log('🔍 测试获取邮箱API连接...', 'info');
+        try {
+          const email = await this.getEmail();
+          if (email) {
+            getLogger().log('✅ 获取邮箱API连接正常', 'success');
+          } else {
+            getLogger().log('❌ 获取邮箱API连接失败', 'error');
+            success = false;
+          }
+        } catch (error) {
+          getLogger().log(`❌ 获取邮箱API测试异常: ${error.message}`, 'error');
+          success = false;
+        }
+      } else {
+        getLogger().log('⚠️ 未配置获取邮箱API地址', 'warning');
+      }
+
+      // 测试获取验证码API（使用测试邮箱）
+      if (apiEmailCodeURL) {
+        getLogger().log('🔍 测试获取验证码API连接...', 'info');
+        try {
+          // 使用测试邮箱进行连接测试
+          const testEmail = 'test@example.com';
+          let testURL = apiEmailCodeURL;
+
+          // 如果URL包含{email}占位符，则替换它
+          if (testURL.includes('{email}')) {
+            testURL = testURL.replace(/{email}/g, encodeURIComponent(testEmail));
+          } else {
+            // 如果没有占位符，则添加email参数
+            testURL = testURL.includes('?')
+              ? `${testURL}&email=${encodeURIComponent(testEmail)}`
+              : `${testURL}?email=${encodeURIComponent(testEmail)}`;
+          }
+
+          const testResult = await new Promise((resolve) => {
+            GM_xmlhttpRequest({
+              method: 'GET',
+              url: testURL,
+              timeout: 5000,
+              onload: function(response) {
+                getLogger().log(`📨 验证码API测试响应: ${response.status}`, 'info');
+                resolve(response.status < 500); // 只要不是服务器错误就算连接正常
+              },
+              onerror: function() {
+                resolve(false);
+              },
+              ontimeout: function() {
+                resolve(false);
+              }
+            });
+          });
+
+          if (testResult) {
+            getLogger().log('✅ 获取验证码API连接正常', 'success');
+          } else {
+            getLogger().log('❌ 获取验证码API连接失败', 'error');
+            success = false;
+          }
+        } catch (error) {
+          getLogger().log(`❌ 获取验证码API测试异常: ${error.message}`, 'error');
+          success = false;
+        }
+      } else {
+        getLogger().log('⚠️ 未配置获取验证码API地址', 'warning');
+      }
+
+      return success;
+    }
+  };
+
+  // ==================== CF验证码处理管理器 ====================
+
+  /**
+   * Cloudflare验证码处理管理器
+   * 负责检测和处理CF验证码
+   */
+  const CFCaptchaManager = {
+    /**
+     * 检测页面是否存在CF验证码
+     */
+    detectCFCaptcha() {
+      // CF验证码的常见选择器
+      const cfSelectors = [
+        'input[type="checkbox"][name="cf-turnstile-response"]', // Turnstile
+        '.cf-turnstile', // Turnstile容器
+        '#cf-challenge-stage', // CF挑战页面
+        '.cf-browser-verification', // CF浏览器验证
+        'iframe[src*="challenges.cloudflare.com"]', // CF iframe
+        '[data-sitekey]', // 通用验证码
+        '.h-captcha', // hCaptcha (有时CF会使用)
+        '#challenge-form' // CF挑战表单
+      ];
+
+      for (const selector of cfSelectors) {
+        const element = document.querySelector(selector);
+        if (element && element.offsetParent !== null) { // 元素存在且可见
+          getLogger().log(`🔍 检测到CF验证码: ${selector}`, 'info');
+          return { detected: true, element, selector };
+        }
+      }
+
+      return { detected: false, element: null, selector: null };
+    },
+
+    /**
+     * 尝试自动处理CF验证码
+     */
+    async autoHandleCFCaptcha(maxRetries = 3) {
+      const { cfCaptchaEnabled, cfCaptchaAutoRetry } = StateManager.app;
+
+      if (!cfCaptchaEnabled) {
+        getLogger().log('⚠️ CF验证码处理已禁用', 'warning');
+        return false;
+      }
+
+      const retries = Math.min(maxRetries, cfCaptchaAutoRetry);
+
+      for (let attempt = 0; attempt < retries; attempt++) {
+        getLogger().log(`🤖 尝试自动处理CF验证码 (第 ${attempt + 1}/${retries} 次)...`, 'info');
+
+        const detection = this.detectCFCaptcha();
+        if (!detection.detected) {
+          getLogger().log('✅ 未检测到CF验证码，继续流程', 'success');
+          return true;
+        }
+
+        try {
+          // 尝试点击复选框
+          if (detection.selector.includes('checkbox') || detection.selector.includes('turnstile')) {
+            const checkbox = detection.element.querySelector('input[type="checkbox"]') || detection.element;
+            if (checkbox && checkbox.type === 'checkbox') {
+              getLogger().log('🖱️ 尝试点击CF复选框...', 'info');
+              checkbox.click();
+
+              // 等待验证完成
+              await new Promise(resolve => setTimeout(resolve, 3000));
+
+              // 检查是否验证成功
+              const newDetection = this.detectCFCaptcha();
+              if (!newDetection.detected) {
+                getLogger().log('✅ CF验证码自动处理成功', 'success');
+                return true;
+              }
+            }
+          }
+
+          // 尝试查找并点击验证按钮
+          const verifyButtons = document.querySelectorAll('button, input[type="submit"], [role="button"]');
+          for (const button of verifyButtons) {
+            const text = button.textContent || button.value || '';
+            if (text.toLowerCase().includes('verify') || text.toLowerCase().includes('continue') ||
+                text.includes('验证') || text.includes('继续')) {
+              getLogger().log(`🖱️ 尝试点击验证按钮: ${text}`, 'info');
+              button.click();
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              break;
+            }
+          }
+
+          // 等待一段时间后重新检测
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+        } catch (error) {
+          getLogger().log(`❌ 自动处理CF验证码失败: ${error.message}`, 'error');
+        }
+      }
+
+      getLogger().log('❌ 自动处理CF验证码失败，需要手动操作', 'error');
+      return false;
+    },
+
+    /**
+     * 显示手动操作提示弹窗
+     */
+    showManualPrompt() {
+      return new Promise((resolve) => {
+        // 创建弹窗
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: rgba(0, 0, 0, 0.8);
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          z-index: 999999;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = `
+          background: #2c3e50;
+          color: #ecf0f1;
+          padding: 30px;
+          border-radius: 12px;
+          max-width: 500px;
+          text-align: center;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        `;
+
+        dialog.innerHTML = `
+          <div style="font-size: 24px; margin-bottom: 20px;">🤖 需要手动操作</div>
+          <div style="font-size: 16px; line-height: 1.6; margin-bottom: 25px;">
+            检测到Cloudflare验证码，自动处理失败。<br>
+            请手动完成验证码验证，然后点击下方按钮继续。
+          </div>
+          <div style="display: flex; gap: 15px; justify-content: center;">
+            <button id="cf-continue-btn" style="
+              background: #27ae60;
+              color: white;
+              border: none;
+              padding: 12px 24px;
+              border-radius: 6px;
+              cursor: pointer;
+              font-size: 16px;
+              font-weight: 500;
+            ">已完成验证，继续</button>
+            <button id="cf-cancel-btn" style="
+              background: #e74c3c;
+              color: white;
+              border: none;
+              padding: 12px 24px;
+              border-radius: 6px;
+              cursor: pointer;
+              font-size: 16px;
+              font-weight: 500;
+            ">取消注册</button>
+          </div>
+          <div style="font-size: 12px; color: #bdc3c7; margin-top: 15px;">
+            超时时间: ${StateManager.app.cfCaptchaTimeout}秒
+          </div>
+        `;
+
+        modal.appendChild(dialog);
+        document.body.appendChild(modal);
+
+        // 绑定按钮事件
+        const continueBtn = dialog.querySelector('#cf-continue-btn');
+        const cancelBtn = dialog.querySelector('#cf-cancel-btn');
+
+        continueBtn.addEventListener('click', () => {
+          document.body.removeChild(modal);
+          resolve(true);
+        });
+
+        cancelBtn.addEventListener('click', () => {
+          document.body.removeChild(modal);
+          resolve(false);
+        });
+
+        // 设置超时
+        const timeout = setTimeout(() => {
+          if (document.body.contains(modal)) {
+            document.body.removeChild(modal);
+            resolve(false);
+          }
+        }, StateManager.app.cfCaptchaTimeout * 1000);
+
+        // 清理超时
+        continueBtn.addEventListener('click', () => clearTimeout(timeout));
+        cancelBtn.addEventListener('click', () => clearTimeout(timeout));
+      });
+    },
+
+    /**
+     * 完整的CF验证码处理流程
+     */
+    async handleCFCaptcha() {
+      const { cfCaptchaEnabled } = StateManager.app;
+
+      if (!cfCaptchaEnabled) {
+        getLogger().log('⚠️ CF验证码处理已禁用，跳过检测', 'warning');
+        return true;
+      }
+
+      getLogger().log('🔍 开始CF验证码检测和处理...', 'info');
+
+      // 1. 检测CF验证码
+      const detection = this.detectCFCaptcha();
+      if (!detection.detected) {
+        getLogger().log('✅ 未检测到CF验证码', 'success');
+        return true;
+      }
+
+      getLogger().log('🚨 检测到CF验证码，开始处理流程', 'warning');
+
+      // 2. 尝试自动处理
+      const autoSuccess = await this.autoHandleCFCaptcha();
+      if (autoSuccess) {
+        getLogger().log('✅ CF验证码自动处理成功', 'success');
+        return true;
+      }
+
+      // 3. 自动处理失败，显示手动提示
+      getLogger().log('🔔 显示手动操作提示弹窗', 'info');
+      const manualSuccess = await this.showManualPrompt();
+
+      if (manualSuccess) {
+        getLogger().log('✅ 用户完成手动验证，继续流程', 'success');
+        return true;
+      } else {
+        getLogger().log('❌ 用户取消或超时，停止注册流程', 'error');
+        return false;
+      }
+    }
+  };
+
   // ==================== API提交功能 ====================
 
   /**
@@ -588,7 +1173,116 @@
   };
 
   /**
-   * 提交认证信息到API
+   * 自定义上传管理器
+   * 支持配置化的上传地址和参数
+   */
+  const CustomUploadManager = {
+    /**
+     * 提交数据到自定义API
+     */
+    async submitData(data, variables = {}) {
+      const { customUploadEnabled, customUploadURL, customUploadMethod } = StateManager.app;
+
+      if (!customUploadEnabled || !customUploadURL) {
+        getLogger().log('⚠️ 自定义上传未启用或未配置URL，跳过上传', 'warning');
+        return false;
+      }
+
+      try {
+        getLogger().log('📤 开始提交数据到自定义API...', 'info');
+
+        // 处理URL中的变量替换
+        let processedURL = customUploadURL;
+        for (const [key, value] of Object.entries(variables)) {
+          const placeholder = `{${key}}`;
+          if (processedURL.includes(placeholder)) {
+            processedURL = processedURL.replace(new RegExp(`\\{${key}\\}`, 'g'), encodeURIComponent(value));
+            getLogger().log(`🔄 替换变量 ${placeholder} -> ${value}`, 'info');
+          }
+        }
+
+        getLogger().log(`🔗 上传地址: ${processedURL}`, 'info');
+        getLogger().log(`📝 请求方法: ${customUploadMethod}`, 'info');
+        getLogger().log(`📋 数据预览: ${JSON.stringify(data, null, 2)}`, 'info');
+
+        return new Promise((resolve) => {
+          GM_xmlhttpRequest({
+            method: customUploadMethod,
+            url: processedURL,
+            headers: {
+              'Accept': '*/*',
+              'Accept-Language': 'zh-CN,zh;q=0.9',
+              'Content-Type': 'application/json',
+              'Sec-Fetch-Dest': 'empty',
+              'Sec-Fetch-Mode': 'cors',
+              'Sec-Fetch-Site': 'cross-site'
+            },
+            data: JSON.stringify(data),
+            timeout: UPLOAD_CONFIG.timeout,
+            onload: function(response) {
+              try {
+                getLogger().log(`📨 自定义API响应状态: ${response.status}`, 'info');
+
+                if (response.status >= 200 && response.status < 300) {
+                  getLogger().log('✅ 自定义API提交成功', 'success');
+                  try {
+                    const responseData = JSON.parse(response.responseText || '{}');
+                    getLogger().log(`📋 API响应数据: ${JSON.stringify(responseData, null, 2)}`, 'info');
+                  } catch (parseError) {
+                    getLogger().log(`📋 API响应文本: ${response.responseText}`, 'info');
+                  }
+                  resolve(true);
+                } else {
+                  getLogger().log(`❌ 自定义API提交失败: HTTP ${response.status}`, 'error');
+                  getLogger().log(`📋 错误详情: ${response.responseText}`, 'error');
+                  resolve(false);
+                }
+              } catch (error) {
+                getLogger().log(`❌ 解析自定义API响应失败: ${error.message}`, 'error');
+                resolve(false);
+              }
+            },
+            onerror: function(error) {
+              getLogger().log(`❌ 自定义API请求网络错误: ${JSON.stringify(error)}`, 'error');
+              resolve(false);
+            },
+            ontimeout: function() {
+              getLogger().log('❌ 自定义API请求超时', 'error');
+              resolve(false);
+            }
+          });
+        });
+      } catch (error) {
+        getLogger().log(`❌ 自定义API提交异常: ${error.message}`, 'error');
+        return false;
+      }
+    },
+
+    /**
+     * 测试自定义上传连接
+     */
+    async testConnection() {
+      const { customUploadEnabled, customUploadURL } = StateManager.app;
+
+      if (!customUploadEnabled || !customUploadURL) {
+        getLogger().log('❌ 自定义上传未启用或未配置', 'error');
+        return false;
+      }
+
+      getLogger().log('🔍 测试自定义上传连接...', 'info');
+
+      const testData = {
+        test: true,
+        timestamp: new Date().toISOString(),
+        message: 'Connection test'
+      };
+
+      return await this.submitData(testData, { test: 'connection' });
+    }
+  };
+
+  /**
+   * 提交认证信息到API（保持向后兼容）
    */
   async function submitToAPI(augmentToken, tenantUrl) {
     // 详细的参数验证和调试信息
@@ -597,6 +1291,27 @@
     getLogger().log(`📋 Augment Token: ${augmentToken ? augmentToken.substring(0, 30) + '...' : '未提供'}`, 'info');
     getLogger().log(`📋 租户URL: ${tenantUrl || '未提供'}`, 'info');
 
+    // 优先使用自定义上传
+    const { customUploadEnabled } = StateManager.app;
+    if (customUploadEnabled) {
+      getLogger().log('🔄 使用自定义上传模式...', 'info');
+      const uploadData = {
+        token: personalToken,
+        augment_token: augmentToken,
+        url: tenantUrl,
+        timestamp: new Date().toISOString()
+      };
+
+      const variables = {
+        token: personalToken,
+        augment_token: augmentToken,
+        url: tenantUrl
+      };
+
+      return await CustomUploadManager.submitData(uploadData, variables);
+    }
+
+    // 原有的API提交逻辑
     if (!personalToken) {
       getLogger().log('⚠️ 未设置个人Token，跳过API提交', 'warning');
       getLogger().log('💡 请在脚本UI中输入个人Token并点击保存', 'info');
@@ -895,8 +1610,26 @@
     }
   }
 
-  function getNextEmail() {
-    // 如果启用预设邮箱且还有剩余邮箱
+  async function getNextEmail() {
+    // 优先级1: API邮箱模式
+    const { apiEmailEnabled } = StateManager.app;
+    if (apiEmailEnabled) {
+      getLogger().log('🔄 使用API邮箱模式...', 'info');
+      try {
+        const email = await APIEmailManager.getEmail();
+        if (email) {
+          getLogger().log(`📧 API获取邮箱成功: ${email}`, 'success');
+          updateRegistrationStatus();
+          return email;
+        } else {
+          getLogger().log('⚠️ API获取邮箱失败，回退到其他模式', 'warning');
+        }
+      } catch (error) {
+        getLogger().log(`❌ API获取邮箱异常: ${error.message}，回退到其他模式`, 'error');
+      }
+    }
+
+    // 优先级2: 如果启用预设邮箱且还有剩余邮箱
     if (usePresetEmails && currentEmailIndex < presetEmails.length) {
       const email = presetEmails[currentEmailIndex];
       // 使用StateManager更新索引
@@ -915,7 +1648,7 @@
       return email;
     }
 
-    // 使用随机邮箱
+    // 优先级3: 使用随机邮箱
     const email = generateRandomEmail();
     getLogger().log(`🎲 使用随机邮箱: ${email}`, 'info');
     return email;
@@ -2546,6 +3279,68 @@
             <div id="preset-status" class="augment-preset-status">随机模式</div>
           </div>
 
+          <!-- API邮箱服务配置 -->
+          <div class="augment-config-group">
+            <label class="augment-label">API邮箱服务:</label>
+            <div class="augment-input-group">
+              <input type="checkbox" id="api-email-enabled" style="margin-right: 8px;">
+              <label for="api-email-enabled" class="augment-label" style="margin-bottom: 0; display: inline;">启用API邮箱模式</label>
+            </div>
+            <div class="augment-input-group">
+              <input id="api-email-get-url" type="text" placeholder="获取邮箱API地址" class="augment-input" style="margin-bottom: 4px;">
+            </div>
+            <div class="augment-input-group">
+              <input id="api-email-code-url" type="text" placeholder="获取验证码API地址，如: http://localhost:3000/api/get-code?email={email}" class="augment-input" style="margin-bottom: 4px;">
+            </div>
+            <div class="augment-button-group">
+              <button id="save-api-email-btn" class="augment-btn-small">保存配置</button>
+              <button id="test-api-email-btn" class="augment-btn-small secondary">测试连接</button>
+            </div>
+            <div class="augment-help-text">API模式优先级最高，失败时自动回退到其他模式</div>
+          </div>
+
+          <!-- 自定义上传配置 -->
+          <div class="augment-config-group">
+            <label class="augment-label">自定义上传:</label>
+            <div class="augment-input-group">
+              <input type="checkbox" id="custom-upload-enabled" style="margin-right: 8px;">
+              <label for="custom-upload-enabled" class="augment-label" style="margin-bottom: 0; display: inline;">启用自定义上传</label>
+            </div>
+            <div class="augment-input-group">
+              <input id="custom-upload-url" type="text" placeholder="上传地址 (支持{token}、{augment_token}、{url}变量)" class="augment-input" style="margin-bottom: 4px;">
+            </div>
+            <div class="augment-input-group">
+              <select id="custom-upload-method" class="augment-input" style="width: 100px; margin-right: 8px;">
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="PATCH">PATCH</option>
+              </select>
+              <button id="save-custom-upload-btn" class="augment-btn-small">保存配置</button>
+              <button id="test-custom-upload-btn" class="augment-btn-small secondary">测试连接</button>
+            </div>
+            <div class="augment-help-text">自定义上传会替代默认的API提交</div>
+          </div>
+
+          <!-- CF验证码处理配置 -->
+          <div class="augment-config-group">
+            <label class="augment-label">CF验证码处理:</label>
+            <div class="augment-input-group">
+              <input type="checkbox" id="cf-captcha-enabled" style="margin-right: 8px;">
+              <label for="cf-captcha-enabled" class="augment-label" style="margin-bottom: 0; display: inline;">启用CF验证码自动处理</label>
+            </div>
+            <div class="augment-input-group">
+              <label class="augment-label" style="margin-bottom: 4px;">超时时间 (秒):</label>
+              <input id="cf-captcha-timeout" type="number" min="30" max="300" value="120" class="augment-input" style="width: 80px; margin-right: 10px;">
+              <label class="augment-label" style="margin-bottom: 4px;">自动重试次数:</label>
+              <input id="cf-captcha-retry" type="number" min="1" max="10" value="3" class="augment-input" style="width: 60px;">
+            </div>
+            <div class="augment-button-group">
+              <button id="save-cf-captcha-btn" class="augment-btn-small">保存配置</button>
+              <button id="test-cf-captcha-btn" class="augment-btn-small secondary">测试检测</button>
+            </div>
+            <div class="augment-help-text">自动尝试处理CF验证码，失败时弹窗提示手动操作</div>
+          </div>
+
           <!-- 验证码等待时间配置 -->
           <div class="augment-config-group">
             <label class="augment-label">验证码等待时间:</label>
@@ -2611,6 +3406,27 @@
       const saveMaxCountBtn = this.element.querySelector('#save-max-count-btn');
       const saveIntervalBtn = this.element.querySelector('#save-interval-btn');
 
+      // API邮箱相关事件
+      const apiEmailEnabledCheckbox = this.element.querySelector('#api-email-enabled');
+      const apiEmailGetUrlInput = this.element.querySelector('#api-email-get-url');
+      const apiEmailCodeUrlInput = this.element.querySelector('#api-email-code-url');
+      const saveApiEmailBtn = this.element.querySelector('#save-api-email-btn');
+      const testApiEmailBtn = this.element.querySelector('#test-api-email-btn');
+
+      // 自定义上传相关事件
+      const customUploadEnabledCheckbox = this.element.querySelector('#custom-upload-enabled');
+      const customUploadUrlInput = this.element.querySelector('#custom-upload-url');
+      const customUploadMethodSelect = this.element.querySelector('#custom-upload-method');
+      const saveCustomUploadBtn = this.element.querySelector('#save-custom-upload-btn');
+      const testCustomUploadBtn = this.element.querySelector('#test-custom-upload-btn');
+
+      // CF验证码相关事件
+      const cfCaptchaEnabledCheckbox = this.element.querySelector('#cf-captcha-enabled');
+      const cfCaptchaTimeoutInput = this.element.querySelector('#cf-captcha-timeout');
+      const cfCaptchaRetryInput = this.element.querySelector('#cf-captcha-retry');
+      const saveCfCaptchaBtn = this.element.querySelector('#save-cf-captcha-btn');
+      const testCfCaptchaBtn = this.element.querySelector('#test-cf-captcha-btn');
+
       if (presetEmailBtn) {
         EventManager.bind(presetEmailBtn, 'click', () => {
           const { presetEmails } = StateManager.app;
@@ -2674,6 +3490,200 @@
         }, { debug: false });
       }
 
+      // API邮箱配置保存事件
+      if (saveApiEmailBtn) {
+        EventManager.bind(saveApiEmailBtn, 'click', () => {
+          const enabled = apiEmailEnabledCheckbox.checked;
+          const getUrl = apiEmailGetUrlInput.value.trim();
+          const codeUrl = apiEmailCodeUrlInput.value.trim();
+
+          updateAppState({
+            apiEmailEnabled: enabled,
+            apiEmailGetURL: getUrl,
+            apiEmailCodeURL: codeUrl
+          });
+
+          getLogger().log('✅ API邮箱配置已保存', 'success');
+          getLogger().log(`📧 启用状态: ${enabled ? '是' : '否'}`, 'info');
+          if (getUrl) getLogger().log(`🔗 获取邮箱API: ${getUrl}`, 'info');
+          if (codeUrl) getLogger().log(`🔗 获取验证码API: ${codeUrl}`, 'info');
+
+          this.update(); // 更新显示状态
+        }, { debug: false });
+      }
+
+      // API邮箱连接测试事件
+      if (testApiEmailBtn) {
+        EventManager.bind(testApiEmailBtn, 'click', async () => {
+          getLogger().log('🔍 开始测试API邮箱连接...', 'info');
+
+          // 先保存当前配置
+          const enabled = apiEmailEnabledCheckbox.checked;
+          const getUrl = apiEmailGetUrlInput.value.trim();
+          const codeUrl = apiEmailCodeUrlInput.value.trim();
+
+          // 调试信息
+          getLogger().log(`🔧 调试信息:`, 'info');
+          getLogger().log(`  - 复选框状态: ${enabled}`, 'info');
+          getLogger().log(`  - 获取邮箱URL: ${getUrl}`, 'info');
+          getLogger().log(`  - 获取验证码URL: ${codeUrl}`, 'info');
+
+          updateAppState({
+            apiEmailEnabled: enabled,
+            apiEmailGetURL: getUrl,
+            apiEmailCodeURL: codeUrl
+          });
+
+          // 验证保存后的状态
+          const savedState = StateManager.app;
+          getLogger().log(`💾 保存后的状态:`, 'info');
+          getLogger().log(`  - apiEmailEnabled: ${savedState.apiEmailEnabled}`, 'info');
+          getLogger().log(`  - apiEmailGetURL: ${savedState.apiEmailGetURL}`, 'info');
+          getLogger().log(`  - apiEmailCodeURL: ${savedState.apiEmailCodeURL}`, 'info');
+
+          if (!enabled) {
+            getLogger().log('❌ API邮箱服务未启用 - 请勾选"启用API邮箱模式"复选框', 'error');
+            return;
+          }
+
+          if (!getUrl) {
+            getLogger().log('❌ 获取邮箱API地址为空', 'error');
+            return;
+          }
+
+          if (!codeUrl) {
+            getLogger().log('❌ 获取验证码API地址为空', 'error');
+            return;
+          }
+
+          const success = await APIEmailManager.testConnection();
+          if (success) {
+            getLogger().log('✅ API邮箱连接测试成功', 'success');
+          } else {
+            getLogger().log('❌ API邮箱连接测试失败', 'error');
+          }
+        }, { debug: false });
+      }
+
+      // 自定义上传配置保存事件
+      if (saveCustomUploadBtn) {
+        EventManager.bind(saveCustomUploadBtn, 'click', () => {
+          const enabled = customUploadEnabledCheckbox.checked;
+          const url = customUploadUrlInput.value.trim();
+          const method = customUploadMethodSelect.value;
+
+          updateAppState({
+            customUploadEnabled: enabled,
+            customUploadURL: url,
+            customUploadMethod: method
+          });
+
+          getLogger().log('✅ 自定义上传配置已保存', 'success');
+          getLogger().log(`📤 启用状态: ${enabled ? '是' : '否'}`, 'info');
+          if (url) getLogger().log(`🔗 上传地址: ${url}`, 'info');
+          getLogger().log(`📝 请求方法: ${method}`, 'info');
+
+          this.update(); // 更新显示状态
+        }, { debug: false });
+      }
+
+      // 自定义上传连接测试事件
+      if (testCustomUploadBtn) {
+        EventManager.bind(testCustomUploadBtn, 'click', async () => {
+          getLogger().log('🔍 开始测试自定义上传连接...', 'info');
+
+          // 先保存当前配置
+          const enabled = customUploadEnabledCheckbox.checked;
+          const url = customUploadUrlInput.value.trim();
+          const method = customUploadMethodSelect.value;
+
+          updateAppState({
+            customUploadEnabled: enabled,
+            customUploadURL: url,
+            customUploadMethod: method
+          });
+
+          if (!enabled) {
+            getLogger().log('❌ 自定义上传未启用', 'error');
+            return;
+          }
+
+          const success = await CustomUploadManager.testConnection();
+          if (success) {
+            getLogger().log('✅ 自定义上传连接测试成功', 'success');
+          } else {
+            getLogger().log('❌ 自定义上传连接测试失败', 'error');
+          }
+        }, { debug: false });
+      }
+
+      // CF验证码配置保存事件
+      if (saveCfCaptchaBtn) {
+        EventManager.bind(saveCfCaptchaBtn, 'click', () => {
+          const enabled = cfCaptchaEnabledCheckbox.checked;
+          const timeout = parseInt(cfCaptchaTimeoutInput.value) || 120;
+          const retry = parseInt(cfCaptchaRetryInput.value) || 3;
+
+          // 验证输入范围
+          const validTimeout = Math.max(30, Math.min(300, timeout));
+          const validRetry = Math.max(1, Math.min(10, retry));
+
+          updateAppState({
+            cfCaptchaEnabled: enabled,
+            cfCaptchaTimeout: validTimeout,
+            cfCaptchaAutoRetry: validRetry
+          });
+
+          getLogger().log('✅ CF验证码配置已保存', 'success');
+          getLogger().log(`🔧 启用状态: ${enabled ? '是' : '否'}`, 'info');
+          getLogger().log(`⏰ 超时时间: ${validTimeout}秒`, 'info');
+          getLogger().log(`🔄 重试次数: ${validRetry}次`, 'info');
+
+          // 更新输入框显示（如果值被修正）
+          if (timeout !== validTimeout) {
+            cfCaptchaTimeoutInput.value = validTimeout;
+          }
+          if (retry !== validRetry) {
+            cfCaptchaRetryInput.value = validRetry;
+          }
+
+          this.update(); // 更新显示状态
+        }, { debug: false });
+      }
+
+      // CF验证码测试检测事件
+      if (testCfCaptchaBtn) {
+        EventManager.bind(testCfCaptchaBtn, 'click', async () => {
+          getLogger().log('🔍 开始测试CF验证码检测...', 'info');
+
+          // 先保存当前配置
+          const enabled = cfCaptchaEnabledCheckbox.checked;
+          const timeout = parseInt(cfCaptchaTimeoutInput.value) || 120;
+          const retry = parseInt(cfCaptchaRetryInput.value) || 3;
+
+          updateAppState({
+            cfCaptchaEnabled: enabled,
+            cfCaptchaTimeout: Math.max(30, Math.min(300, timeout)),
+            cfCaptchaAutoRetry: Math.max(1, Math.min(10, retry))
+          });
+
+          if (!enabled) {
+            getLogger().log('❌ CF验证码处理未启用', 'error');
+            return;
+          }
+
+          // 测试检测功能
+          const detection = CFCaptchaManager.detectCFCaptcha();
+          if (detection.detected) {
+            getLogger().log(`✅ 检测到CF验证码: ${detection.selector}`, 'success');
+            getLogger().log('🔧 可以尝试自动处理或手动操作', 'info');
+          } else {
+            getLogger().log('ℹ️ 当前页面未检测到CF验证码', 'info');
+            getLogger().log('💡 这是正常的，只有在遇到CF验证码时才会检测到', 'info');
+          }
+        }, { debug: false });
+      }
+
       // 折叠功能 - 使用EventManager
       const header = this.element.querySelector('#advanced-config-header');
       if (header) {
@@ -2712,12 +3722,27 @@
      * 更新显示内容
      */
     update() {
-      const { presetEmails, currentEmailIndex, usePresetEmails } = StateManager.app;
+      const {
+        presetEmails,
+        currentEmailIndex,
+        usePresetEmails,
+        apiEmailEnabled,
+        apiEmailGetURL,
+        apiEmailCodeURL,
+        customUploadEnabled,
+        customUploadURL,
+        customUploadMethod,
+        cfCaptchaEnabled,
+        cfCaptchaTimeout,
+        cfCaptchaAutoRetry
+      } = StateManager.app;
 
       if (this.presetStatus) {
         if (usePresetEmails && presetEmails.length > 0) {
           const remaining = presetEmails.length - currentEmailIndex;
           this.presetStatus.textContent = `预设模式 (${remaining}/${presetEmails.length})`;
+        } else if (apiEmailEnabled) {
+          this.presetStatus.textContent = 'API模式';
         } else {
           this.presetStatus.textContent = '随机模式';
         }
@@ -2736,6 +3761,51 @@
       // 更新注册间隔时间输入框
       if (this.registrationIntervalInput) {
         this.registrationIntervalInput.value = StateManager.app.registrationInterval || 60;
+      }
+
+      // 更新API邮箱配置显示
+      const apiEmailEnabledCheckbox = this.element.querySelector('#api-email-enabled');
+      const apiEmailGetUrlInput = this.element.querySelector('#api-email-get-url');
+      const apiEmailCodeUrlInput = this.element.querySelector('#api-email-code-url');
+
+      if (apiEmailEnabledCheckbox) {
+        apiEmailEnabledCheckbox.checked = apiEmailEnabled;
+      }
+      if (apiEmailGetUrlInput) {
+        apiEmailGetUrlInput.value = apiEmailGetURL || '';
+      }
+      if (apiEmailCodeUrlInput) {
+        apiEmailCodeUrlInput.value = apiEmailCodeURL || '';
+      }
+
+      // 更新自定义上传配置显示
+      const customUploadEnabledCheckbox = this.element.querySelector('#custom-upload-enabled');
+      const customUploadUrlInput = this.element.querySelector('#custom-upload-url');
+      const customUploadMethodSelect = this.element.querySelector('#custom-upload-method');
+
+      if (customUploadEnabledCheckbox) {
+        customUploadEnabledCheckbox.checked = customUploadEnabled;
+      }
+      if (customUploadUrlInput) {
+        customUploadUrlInput.value = customUploadURL || '';
+      }
+      if (customUploadMethodSelect) {
+        customUploadMethodSelect.value = customUploadMethod || 'POST';
+      }
+
+      // 更新CF验证码配置显示
+      const cfCaptchaEnabledCheckbox = this.element.querySelector('#cf-captcha-enabled');
+      const cfCaptchaTimeoutInput = this.element.querySelector('#cf-captcha-timeout');
+      const cfCaptchaRetryInput = this.element.querySelector('#cf-captcha-retry');
+
+      if (cfCaptchaEnabledCheckbox) {
+        cfCaptchaEnabledCheckbox.checked = cfCaptchaEnabled;
+      }
+      if (cfCaptchaTimeoutInput) {
+        cfCaptchaTimeoutInput.value = cfCaptchaTimeout || 120;
+      }
+      if (cfCaptchaRetryInput) {
+        cfCaptchaRetryInput.value = cfCaptchaAutoRetry || 3;
       }
 
       // 更新展开状态
@@ -3797,7 +4867,7 @@
       getLogger().log('🔐 预先生成OAuth认证信息...', 'info');
 
       // 获取邮箱（优先使用预设邮箱）
-      const email = getNextEmail();
+      const email = await getNextEmail();
 
       // 生成OAuth认证URL并保存状态
       const authUrl = await OAuthManager.generateAuthUrl(email);
@@ -4045,8 +5115,28 @@
     });
   }
 
-  // 获取验证码（带重试机制）
-  async function getVerificationCode(maxRetries = 5, retryInterval = 3000) {
+  // 获取验证码（带重试机制，支持API模式）
+  async function getVerificationCode(email = null, maxRetries = 5, retryInterval = 3000) {
+    const { apiEmailEnabled } = StateManager.app;
+
+    // 优先使用API模式获取验证码
+    if (apiEmailEnabled && email) {
+      getLogger().log('🔄 使用API模式获取验证码...', 'info');
+      try {
+        const code = await APIEmailManager.getVerificationCode(email, maxRetries);
+        if (code) {
+          getLogger().log(`✅ API获取验证码成功: ${code}`, 'success');
+          return code;
+        } else {
+          getLogger().log('⚠️ API获取验证码失败，回退到邮箱模式', 'warning');
+        }
+      } catch (error) {
+        getLogger().log(`❌ API获取验证码异常: ${error.message}，回退到邮箱模式`, 'error');
+      }
+    }
+
+    // 回退到原有的邮箱模式
+    getLogger().log('🔄 使用邮箱模式获取验证码...', 'info');
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       getLogger().log(`尝试获取验证码 (第 ${attempt + 1}/${maxRetries} 次)...`);
 
@@ -4124,19 +5214,7 @@
         continue;
       }
 
-      // 检查是否验证成功
-      const successText = Array.from(document.querySelectorAll('*')).find(el =>
-          el.textContent && el.textContent.includes('Success!')
-      );
 
-      if (successText && successText.textContent.includes('Success!')) {
-        if (successText.offsetParent !== null) {
-          getLogger().log('✅ 人机验证成功！检测到Success!标志', 'success');
-          return true;
-        } else {
-          getLogger().log('Success!文本存在但不可见，继续等待...', 'info');
-        }
-      }
 
       // 检查是否验证失败或需要重新验证
       const newCheckbox = document.querySelector('input[type="checkbox"]');
@@ -4146,20 +5224,44 @@
         await new Promise(resolve => setTimeout(resolve, 2000));
         continue;
       }
+
+      // 严谨的验证完成检查逻辑
+      const currentCheckbox = document.querySelector('input[type="checkbox"]');
+      const successText = Array.from(document.querySelectorAll('*')).find(el =>
+          el.textContent && el.textContent.includes('Success!')
+      );
+
+      // 如果（页面没有复选框 或 复选框已经选择）并且有Success!文本 → 表示验证通过
+      if ((!currentCheckbox || currentCheckbox.checked) && successText) {
+        getLogger().log('✅ 人机验证通过！检测条件：复选框状态正常且有Success!文本', 'success');
+        return true;
+      }
+
+      // 否则需要等待并提示用户手动操作
+      if (i > 30) { // 30秒后开始提示手动操作
+        getLogger().log('⏳ 验证进行中，请手动完成人机验证...', 'info');
+      }
     }
 
-    // 最终检查验证状态
+    // 最终检查验证状态 - 改进的检测逻辑
     const finalSuccessText = Array.from(document.querySelectorAll('*')).find(
         el =>
             el.textContent && el.textContent.includes('Success!')
     );
 
-    if (finalSuccessText && finalSuccessText.offsetParent !== null) {
-      getLogger().log('人机验证最终成功！检测到Success!文本', 'success');
+    if (finalSuccessText) {
+      getLogger().log('✅ 人机验证最终成功！检测到Success!文本', 'success');
       return true;
     }
 
-    getLogger().log('人机验证超时或失败 - 未检测到Success!标志', 'error');
+    // 最终检查复选框状态
+    const finalCheckbox = document.querySelector('input[type="checkbox"]');
+    if (finalCheckbox && finalCheckbox.checked) {
+      getLogger().log('✅ 人机验证最终成功！复选框保持勾选状态', 'success');
+      return true;
+    }
+
+    getLogger().log('❌ 人机验证超时或失败 - 未检测到成功标志', 'error');
     return false;
   }
 
@@ -4313,7 +5415,7 @@
 
         // 如果仍然没有邮箱，生成一个新的
         if (!email) {
-          email = getNextEmail(); // 使用统一的邮箱生成函数
+          email = await getNextEmail(); // 使用统一的邮箱生成函数
           getLogger().log(`⚠️ 无法获取邮箱，生成新邮箱: ${email}`, 'warning');
         }
 
@@ -4817,7 +5919,15 @@
       getLogger().log('邮箱填写完成', 'success');
     }
 
-    // 2. 等待并处理人机验证
+    // 2. 检查并处理CF验证码
+    getLogger().log('🔍 检查CF验证码...', 'info');
+    const cfResult = await CFCaptchaManager.handleCFCaptcha();
+    if (!cfResult) {
+      getLogger().log('❌ CF验证码处理失败或用户取消', 'error');
+      return false;
+    }
+
+    // 3. 等待并处理人机验证
     getLogger().log('开始处理人机验证流程...', 'info');
     await new Promise(resolve => setTimeout(resolve, 1000));
 
@@ -4833,7 +5943,7 @@
       }
     }
 
-    // 3. 人机验证成功后，点击继续按钮
+    // 4. 人机验证成功后，点击继续按钮
     const continueBtn = await waitForElement('button[type="submit"]');
     if (!continueBtn) {
       getLogger().log('未找到继续按钮', 'error');
@@ -4851,8 +5961,31 @@
   async function handleSecondPage() {
     getLogger().log('开始处理第二页面：验证码输入', 'info');
 
-    // 1. 获取验证码
-    const code = await getVerificationCode();
+    // 获取当前注册使用的邮箱
+    let currentEmail = GM_getValue('current_registration_email', null);
+
+    // 如果没有找到预设邮箱，尝试从页面中提取
+    if (!currentEmail) {
+      const emailSentText = Array.from(document.querySelectorAll('*')).find(el =>
+        el.textContent && el.textContent.includes("We've sent an email with your code to")
+      );
+      if (emailSentText) {
+        const emailMatch = emailSentText.textContent.match(/to\s+([^\s]+@[^\s]+)/);
+        if (emailMatch) {
+          currentEmail = emailMatch[1];
+          getLogger().log(`📧 从页面提取到邮箱: ${currentEmail}`, 'info');
+        }
+      }
+    }
+
+    if (currentEmail) {
+      getLogger().log(`📧 使用邮箱获取验证码: ${currentEmail}`, 'info');
+    } else {
+      getLogger().log('⚠️ 未找到当前注册邮箱，将使用传统模式获取验证码', 'warning');
+    }
+
+    // 1. 获取验证码（传入邮箱参数以支持API模式）
+    const code = await getVerificationCode(currentEmail);
     if (!code) {
       getLogger().log('未能获取验证码', 'error');
       return false;
@@ -5214,8 +6347,8 @@
     const validations = [
       {
         name: '邮箱生成功能',
-        test: () => {
-          const email = getNextEmail();
+        test: async () => {
+          const email = await getNextEmail();
           return email && email.includes('@') && email.length > 5;
         }
       },

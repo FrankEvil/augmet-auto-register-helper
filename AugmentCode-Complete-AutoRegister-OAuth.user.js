@@ -422,20 +422,22 @@
       // API邮箱服务配置
       apiEmailEnabled: GM_getValue('apiEmailEnabled', false),
       apiEmailGetURL: GM_getValue('apiEmailGetURL', ''),
+      apiEmailGetMethod: GM_getValue('apiEmailGetMethod', 'GET'),
+      apiEmailGetBody: GM_getValue('apiEmailGetBody', ''),
       apiEmailCodeURL: GM_getValue('apiEmailCodeURL', ''),
+      apiEmailCodeMethod: GM_getValue('apiEmailCodeMethod', 'GET'),
+      apiEmailCodeBody: GM_getValue('apiEmailCodeBody', ''),
 
       // 自定义上传配置
       customUploadEnabled: GM_getValue('customUploadEnabled', false),
       customUploadURL: GM_getValue('customUploadURL', ''),
       customUploadMethod: GM_getValue('customUploadMethod', 'POST'),
+      customUploadBody: GM_getValue('customUploadBody', ''),
 
       // CF验证码处理配置
       cfCaptchaEnabled: GM_getValue('cfCaptchaEnabled', true),
       cfCaptchaTimeout: GM_getValue('cfCaptchaTimeout', 120),
       cfCaptchaAutoRetry: GM_getValue('cfCaptchaAutoRetry', 3),
-
-      // 验证码等待时间配置
-      captchaWaitTime: GM_getValue('captchaWaitTime', 20)
     },
 
     // 状态变化监听器
@@ -471,12 +473,17 @@
         // 保存API邮箱配置
         GM_setValue('apiEmailEnabled', this.app.apiEmailEnabled);
         GM_setValue('apiEmailGetURL', this.app.apiEmailGetURL);
+        GM_setValue('apiEmailGetMethod', this.app.apiEmailGetMethod);
+        GM_setValue('apiEmailGetBody', this.app.apiEmailGetBody);
         GM_setValue('apiEmailCodeURL', this.app.apiEmailCodeURL);
+        GM_setValue('apiEmailCodeMethod', this.app.apiEmailCodeMethod);
+        GM_setValue('apiEmailCodeBody', this.app.apiEmailCodeBody);
 
         // 保存自定义上传配置
         GM_setValue('customUploadEnabled', this.app.customUploadEnabled);
         GM_setValue('customUploadURL', this.app.customUploadURL);
         GM_setValue('customUploadMethod', this.app.customUploadMethod);
+        GM_setValue('customUploadBody', this.app.customUploadBody);
 
         // 保存CF验证码配置
         GM_setValue('cfCaptchaEnabled', this.app.cfCaptchaEnabled);
@@ -522,12 +529,17 @@
         // 加载API邮箱配置
         this.app.apiEmailEnabled = GM_getValue('apiEmailEnabled', false);
         this.app.apiEmailGetURL = GM_getValue('apiEmailGetURL', '');
+        this.app.apiEmailGetMethod = GM_getValue('apiEmailGetMethod', 'GET');
+        this.app.apiEmailGetBody = GM_getValue('apiEmailGetBody', '');
         this.app.apiEmailCodeURL = GM_getValue('apiEmailCodeURL', '');
+        this.app.apiEmailCodeMethod = GM_getValue('apiEmailCodeMethod', 'GET');
+        this.app.apiEmailCodeBody = GM_getValue('apiEmailCodeBody', '');
 
         // 加载自定义上传配置
         this.app.customUploadEnabled = GM_getValue('customUploadEnabled', false);
         this.app.customUploadURL = GM_getValue('customUploadURL', '');
         this.app.customUploadMethod = GM_getValue('customUploadMethod', 'POST');
+        this.app.customUploadBody = GM_getValue('customUploadBody', '');
 
         // 加载CF验证码配置
         this.app.cfCaptchaEnabled = GM_getValue('cfCaptchaEnabled', true);
@@ -669,7 +681,7 @@
      * 通过API获取邮箱地址
      */
     async getEmail() {
-      const { apiEmailEnabled, apiEmailGetURL } = StateManager.app;
+      const { apiEmailEnabled, apiEmailGetURL, apiEmailGetMethod, apiEmailGetBody } = StateManager.app;
 
       if (!apiEmailEnabled || !apiEmailGetURL) {
         getLogger().log('❌ API邮箱服务未启用或未配置获取邮箱URL', 'error');
@@ -679,12 +691,38 @@
       try {
         getLogger().log('📧 开始通过API获取邮箱...', 'info');
         getLogger().log(`🔗 API地址: ${apiEmailGetURL}`, 'info');
+        getLogger().log(`📝 请求方法: ${apiEmailGetMethod}`, 'info');
+
+        // 准备请求配置
+        const requestConfig = {
+          method: apiEmailGetMethod,
+          url: apiEmailGetURL,
+          timeout: API_EMAIL_CONFIG.timeout,
+          headers: {
+            'Accept': 'application/json',
+            'Accept-Language': 'zh-CN,zh;q=0.9'
+          }
+        };
+
+        // 如果是POST方法且有body配置，添加请求体
+        if (apiEmailGetMethod === 'POST' && apiEmailGetBody.trim()) {
+          try {
+            // 处理变量替换
+            let processedBody = apiEmailGetBody;
+            // 这里可以添加更多变量替换逻辑
+
+            requestConfig.headers['Content-Type'] = 'application/json';
+            requestConfig.data = processedBody;
+            getLogger().log(`📋 请求体: ${processedBody}`, 'info');
+          } catch (error) {
+            getLogger().log(`❌ 请求体格式错误: ${error.message}`, 'error');
+            return null;
+          }
+        }
 
         return new Promise((resolve, reject) => {
           GM_xmlhttpRequest({
-            method: 'GET',
-            url: apiEmailGetURL,
-            timeout: API_EMAIL_CONFIG.timeout,
+            ...requestConfig,
             onload: function(response) {
               try {
                 getLogger().log(`📨 API响应状态: ${response.status}`, 'info');
@@ -731,7 +769,7 @@
      * 通过API获取验证码
      */
     async getVerificationCode(email, maxRetries = 5) {
-      const { apiEmailEnabled, apiEmailCodeURL } = StateManager.app;
+      const { apiEmailEnabled, apiEmailCodeURL, apiEmailCodeMethod, apiEmailCodeBody } = StateManager.app;
 
       if (!apiEmailEnabled || !apiEmailCodeURL) {
         getLogger().log('❌ API邮箱服务未启用或未配置获取验证码URL', 'error');
@@ -747,27 +785,58 @@
         try {
           getLogger().log(`🔍 尝试获取验证码 (第 ${attempt + 1}/${maxRetries} 次)...`, 'info');
           getLogger().log(`📧 邮箱: ${email}`, 'info');
+          getLogger().log(`📝 请求方法: ${apiEmailCodeMethod || 'GET'}`, 'info');
 
-          // 构建请求URL，支持参数替换
+          // 准备请求配置
           let requestURL = apiEmailCodeURL;
+          const method = apiEmailCodeMethod || 'GET';
+          const requestConfig = {
+            method: method,
+            timeout: API_EMAIL_CONFIG.timeout,
+            headers: {
+              'Accept': 'application/json',
+              'Accept-Language': 'zh-CN,zh;q=0.9'
+            }
+          };
 
-          // 如果URL包含{email}占位符，则替换它
-          if (requestURL.includes('{email}')) {
-            requestURL = requestURL.replace(/{email}/g, encodeURIComponent(email));
-          } else {
-            // 如果没有占位符，则添加email参数
-            requestURL = requestURL.includes('?')
-              ? `${requestURL}&email=${encodeURIComponent(email)}`
-              : `${requestURL}?email=${encodeURIComponent(email)}`;
+          if (method === 'GET') {
+            // GET方法：URL参数替换
+            if (requestURL.includes('{email}')) {
+              requestURL = requestURL.replace(/{email}/g, encodeURIComponent(email));
+            } else {
+              // 如果没有占位符，则添加email参数
+              requestURL = requestURL.includes('?')
+                ? `${requestURL}&email=${encodeURIComponent(email)}`
+                : `${requestURL}?email=${encodeURIComponent(email)}`;
+            }
+          } else if (method === 'POST') {
+            // POST方法：处理请求体
+            if (apiEmailCodeBody && apiEmailCodeBody.trim()) {
+              try {
+                // 处理变量替换
+                let processedBody = apiEmailCodeBody.replace(/{email}/g, email);
+
+                requestConfig.headers['Content-Type'] = 'application/json';
+                requestConfig.data = processedBody;
+                getLogger().log(`📋 请求体: ${processedBody}`, 'info');
+              } catch (error) {
+                getLogger().log(`❌ 请求体格式错误: ${error.message}`, 'error');
+                return null;
+              }
+            } else {
+              // 如果没有配置body，使用默认的JSON格式
+              requestConfig.headers['Content-Type'] = 'application/json';
+              requestConfig.data = JSON.stringify({ email: email });
+              getLogger().log(`📋 使用默认请求体: {"email": "${email}"}`, 'info');
+            }
           }
 
+          requestConfig.url = requestURL;
           getLogger().log(`🔗 API地址: ${requestURL}`, 'info');
 
           const code = await new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
-              method: 'GET',
-              url: requestURL,
-              timeout: API_EMAIL_CONFIG.timeout,
+              ...requestConfig,
               onload: function(response) {
                 try {
                   getLogger().log(`📨 API响应状态: ${response.status}`, 'info');
@@ -1181,7 +1250,7 @@
      * 提交数据到自定义API
      */
     async submitData(data, variables = {}) {
-      const { customUploadEnabled, customUploadURL, customUploadMethod } = StateManager.app;
+      const { customUploadEnabled, customUploadURL, customUploadMethod, customUploadBody } = StateManager.app;
 
       if (!customUploadEnabled || !customUploadURL) {
         getLogger().log('⚠️ 自定义上传未启用或未配置URL，跳过上传', 'warning');
@@ -1203,21 +1272,66 @@
 
         getLogger().log(`🔗 上传地址: ${processedURL}`, 'info');
         getLogger().log(`📝 请求方法: ${customUploadMethod}`, 'info');
-        getLogger().log(`📋 数据预览: ${JSON.stringify(data, null, 2)}`, 'info');
+
+        // 准备请求配置
+        const requestConfig = {
+          method: customUploadMethod,
+          url: processedURL,
+          headers: {
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'cross-site'
+          }
+        };
+
+        // 处理请求体
+        if (customUploadMethod === 'GET') {
+          // GET方法不需要请求体
+          getLogger().log(`📋 GET请求，无需请求体`, 'info');
+        } else {
+          // POST/PUT/PATCH方法处理请求体
+          if (customUploadBody && customUploadBody.trim()) {
+            try {
+              // 处理自定义body中的变量替换
+              let processedBody = customUploadBody;
+
+              // 替换数据变量
+              for (const [key, value] of Object.entries(data)) {
+                const placeholder = `{${key}}`;
+                if (processedBody.includes(placeholder)) {
+                  processedBody = processedBody.replace(new RegExp(`\\{${key}\\}`, 'g'),
+                    typeof value === 'string' ? value : JSON.stringify(value));
+                }
+              }
+
+              // 替换其他变量
+              for (const [key, value] of Object.entries(variables)) {
+                const placeholder = `{${key}}`;
+                if (processedBody.includes(placeholder)) {
+                  processedBody = processedBody.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
+                }
+              }
+
+              requestConfig.headers['Content-Type'] = 'application/json';
+              requestConfig.data = processedBody;
+              getLogger().log(`📋 使用自定义请求体: ${processedBody}`, 'info');
+            } catch (error) {
+              getLogger().log(`❌ 自定义请求体格式错误: ${error.message}`, 'error');
+              return false;
+            }
+          } else {
+            // 使用默认的数据格式
+            requestConfig.headers['Content-Type'] = 'application/json';
+            requestConfig.data = JSON.stringify(data);
+            getLogger().log(`📋 使用默认请求体: ${JSON.stringify(data, null, 2)}`, 'info');
+          }
+        }
 
         return new Promise((resolve) => {
           GM_xmlhttpRequest({
-            method: customUploadMethod,
-            url: processedURL,
-            headers: {
-              'Accept': '*/*',
-              'Accept-Language': 'zh-CN,zh;q=0.9',
-              'Content-Type': 'application/json',
-              'Sec-Fetch-Dest': 'empty',
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Site': 'cross-site'
-            },
-            data: JSON.stringify(data),
+            ...requestConfig,
             timeout: UPLOAD_CONFIG.timeout,
             onload: function(response) {
               try {
@@ -3290,7 +3404,21 @@
               <input id="api-email-get-url" type="text" placeholder="获取邮箱API地址" class="augment-input" style="margin-bottom: 4px;">
             </div>
             <div class="augment-input-group">
+              <select id="api-email-get-method" class="augment-input" style="width: 80px; margin-right: 8px;">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+              </select>
+              <input id="api-email-get-body" type="text" placeholder="POST请求体 (JSON格式，可选)" class="augment-input" style="flex: 1; margin-bottom: 4px;">
+            </div>
+            <div class="augment-input-group">
               <input id="api-email-code-url" type="text" placeholder="获取验证码API地址，如: http://localhost:3000/api/get-code?email={email}" class="augment-input" style="margin-bottom: 4px;">
+            </div>
+            <div class="augment-input-group">
+              <select id="api-email-code-method" class="augment-input" style="width: 80px; margin-right: 8px;">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+              </select>
+              <input id="api-email-code-body" type="text" placeholder="POST请求体 (JSON格式，支持{email}变量，可选)" class="augment-input" style="flex: 1; margin-bottom: 4px;">
             </div>
             <div class="augment-button-group">
               <button id="save-api-email-btn" class="augment-btn-small">保存配置</button>
@@ -3311,10 +3439,16 @@
             </div>
             <div class="augment-input-group">
               <select id="custom-upload-method" class="augment-input" style="width: 100px; margin-right: 8px;">
+                <option value="GET">GET</option>
                 <option value="POST">POST</option>
                 <option value="PUT">PUT</option>
                 <option value="PATCH">PATCH</option>
               </select>
+            </div>
+            <div class="augment-input-group">
+              <input id="custom-upload-body" type="text" placeholder="请求体 (JSON格式，支持{token}、{augment_token}等变量，GET方法忽略)" class="augment-input" style="margin-bottom: 4px;">
+            </div>
+            <div class="augment-input-group">
               <button id="save-custom-upload-btn" class="augment-btn-small">保存配置</button>
               <button id="test-custom-upload-btn" class="augment-btn-small secondary">测试连接</button>
             </div>
@@ -3409,7 +3543,11 @@
       // API邮箱相关事件
       const apiEmailEnabledCheckbox = this.element.querySelector('#api-email-enabled');
       const apiEmailGetUrlInput = this.element.querySelector('#api-email-get-url');
+      const apiEmailGetMethodSelect = this.element.querySelector('#api-email-get-method');
+      const apiEmailGetBodyInput = this.element.querySelector('#api-email-get-body');
       const apiEmailCodeUrlInput = this.element.querySelector('#api-email-code-url');
+      const apiEmailCodeMethodSelect = this.element.querySelector('#api-email-code-method');
+      const apiEmailCodeBodyInput = this.element.querySelector('#api-email-code-body');
       const saveApiEmailBtn = this.element.querySelector('#save-api-email-btn');
       const testApiEmailBtn = this.element.querySelector('#test-api-email-btn');
 
@@ -3417,6 +3555,7 @@
       const customUploadEnabledCheckbox = this.element.querySelector('#custom-upload-enabled');
       const customUploadUrlInput = this.element.querySelector('#custom-upload-url');
       const customUploadMethodSelect = this.element.querySelector('#custom-upload-method');
+      const customUploadBodyInput = this.element.querySelector('#custom-upload-body');
       const saveCustomUploadBtn = this.element.querySelector('#save-custom-upload-btn');
       const testCustomUploadBtn = this.element.querySelector('#test-custom-upload-btn');
 
@@ -3495,18 +3634,26 @@
         EventManager.bind(saveApiEmailBtn, 'click', () => {
           const enabled = apiEmailEnabledCheckbox.checked;
           const getUrl = apiEmailGetUrlInput.value.trim();
+          const getMethod = apiEmailGetMethodSelect.value;
+          const getBody = apiEmailGetBodyInput.value.trim();
           const codeUrl = apiEmailCodeUrlInput.value.trim();
+          const codeMethod = apiEmailCodeMethodSelect.value;
+          const codeBody = apiEmailCodeBodyInput.value.trim();
 
           updateAppState({
             apiEmailEnabled: enabled,
             apiEmailGetURL: getUrl,
-            apiEmailCodeURL: codeUrl
+            apiEmailGetMethod: getMethod,
+            apiEmailGetBody: getBody,
+            apiEmailCodeURL: codeUrl,
+            apiEmailCodeMethod: codeMethod,
+            apiEmailCodeBody: codeBody
           });
 
           getLogger().log('✅ API邮箱配置已保存', 'success');
           getLogger().log(`📧 启用状态: ${enabled ? '是' : '否'}`, 'info');
-          if (getUrl) getLogger().log(`🔗 获取邮箱API: ${getUrl}`, 'info');
-          if (codeUrl) getLogger().log(`🔗 获取验证码API: ${codeUrl}`, 'info');
+          if (getUrl) getLogger().log(`🔗 获取邮箱API: ${getUrl} (${getMethod})`, 'info');
+          if (codeUrl) getLogger().log(`🔗 获取验证码API: ${codeUrl} (${codeMethod})`, 'info');
 
           this.update(); // 更新显示状态
         }, { debug: false });
@@ -3520,18 +3667,26 @@
           // 先保存当前配置
           const enabled = apiEmailEnabledCheckbox.checked;
           const getUrl = apiEmailGetUrlInput.value.trim();
+          const getMethod = apiEmailGetMethodSelect.value;
+          const getBody = apiEmailGetBodyInput.value.trim();
           const codeUrl = apiEmailCodeUrlInput.value.trim();
+          const codeMethod = apiEmailCodeMethodSelect.value;
+          const codeBody = apiEmailCodeBodyInput.value.trim();
 
           // 调试信息
           getLogger().log(`🔧 调试信息:`, 'info');
           getLogger().log(`  - 复选框状态: ${enabled}`, 'info');
-          getLogger().log(`  - 获取邮箱URL: ${getUrl}`, 'info');
-          getLogger().log(`  - 获取验证码URL: ${codeUrl}`, 'info');
+          getLogger().log(`  - 获取邮箱URL: ${getUrl} (${getMethod})`, 'info');
+          getLogger().log(`  - 获取验证码URL: ${codeUrl} (${codeMethod})`, 'info');
 
           updateAppState({
             apiEmailEnabled: enabled,
             apiEmailGetURL: getUrl,
-            apiEmailCodeURL: codeUrl
+            apiEmailGetMethod: getMethod,
+            apiEmailGetBody: getBody,
+            apiEmailCodeURL: codeUrl,
+            apiEmailCodeMethod: codeMethod,
+            apiEmailCodeBody: codeBody
           });
 
           // 验证保存后的状态
@@ -3571,17 +3726,20 @@
           const enabled = customUploadEnabledCheckbox.checked;
           const url = customUploadUrlInput.value.trim();
           const method = customUploadMethodSelect.value;
+          const body = customUploadBodyInput.value.trim();
 
           updateAppState({
             customUploadEnabled: enabled,
             customUploadURL: url,
-            customUploadMethod: method
+            customUploadMethod: method,
+            customUploadBody: body
           });
 
           getLogger().log('✅ 自定义上传配置已保存', 'success');
           getLogger().log(`📤 启用状态: ${enabled ? '是' : '否'}`, 'info');
           if (url) getLogger().log(`🔗 上传地址: ${url}`, 'info');
           getLogger().log(`📝 请求方法: ${method}`, 'info');
+          if (body && method !== 'GET') getLogger().log(`📋 请求体: ${body}`, 'info');
 
           this.update(); // 更新显示状态
         }, { debug: false });
@@ -3596,11 +3754,13 @@
           const enabled = customUploadEnabledCheckbox.checked;
           const url = customUploadUrlInput.value.trim();
           const method = customUploadMethodSelect.value;
+          const body = customUploadBodyInput.value.trim();
 
           updateAppState({
             customUploadEnabled: enabled,
             customUploadURL: url,
-            customUploadMethod: method
+            customUploadMethod: method,
+            customUploadBody: body
           });
 
           if (!enabled) {
@@ -3728,10 +3888,15 @@
         usePresetEmails,
         apiEmailEnabled,
         apiEmailGetURL,
+        apiEmailGetMethod,
+        apiEmailGetBody,
         apiEmailCodeURL,
+        apiEmailCodeMethod,
+        apiEmailCodeBody,
         customUploadEnabled,
         customUploadURL,
         customUploadMethod,
+        customUploadBody,
         cfCaptchaEnabled,
         cfCaptchaTimeout,
         cfCaptchaAutoRetry
@@ -3766,7 +3931,11 @@
       // 更新API邮箱配置显示
       const apiEmailEnabledCheckbox = this.element.querySelector('#api-email-enabled');
       const apiEmailGetUrlInput = this.element.querySelector('#api-email-get-url');
+      const apiEmailGetMethodSelect = this.element.querySelector('#api-email-get-method');
+      const apiEmailGetBodyInput = this.element.querySelector('#api-email-get-body');
       const apiEmailCodeUrlInput = this.element.querySelector('#api-email-code-url');
+      const apiEmailCodeMethodSelect = this.element.querySelector('#api-email-code-method');
+      const apiEmailCodeBodyInput = this.element.querySelector('#api-email-code-body');
 
       if (apiEmailEnabledCheckbox) {
         apiEmailEnabledCheckbox.checked = apiEmailEnabled;
@@ -3774,14 +3943,27 @@
       if (apiEmailGetUrlInput) {
         apiEmailGetUrlInput.value = apiEmailGetURL || '';
       }
+      if (apiEmailGetMethodSelect) {
+        apiEmailGetMethodSelect.value = apiEmailGetMethod || 'GET';
+      }
+      if (apiEmailGetBodyInput) {
+        apiEmailGetBodyInput.value = apiEmailGetBody || '';
+      }
       if (apiEmailCodeUrlInput) {
         apiEmailCodeUrlInput.value = apiEmailCodeURL || '';
+      }
+      if (apiEmailCodeMethodSelect) {
+        apiEmailCodeMethodSelect.value = apiEmailCodeMethod || 'GET';
+      }
+      if (apiEmailCodeBodyInput) {
+        apiEmailCodeBodyInput.value = apiEmailCodeBody || '';
       }
 
       // 更新自定义上传配置显示
       const customUploadEnabledCheckbox = this.element.querySelector('#custom-upload-enabled');
       const customUploadUrlInput = this.element.querySelector('#custom-upload-url');
       const customUploadMethodSelect = this.element.querySelector('#custom-upload-method');
+      const customUploadBodyInput = this.element.querySelector('#custom-upload-body');
 
       if (customUploadEnabledCheckbox) {
         customUploadEnabledCheckbox.checked = customUploadEnabled;
@@ -3791,6 +3973,9 @@
       }
       if (customUploadMethodSelect) {
         customUploadMethodSelect.value = customUploadMethod || 'POST';
+      }
+      if (customUploadBodyInput) {
+        customUploadBodyInput.value = customUploadBody || '';
       }
 
       // 更新CF验证码配置显示
@@ -4910,6 +5095,13 @@
     // 隐藏倒计时
     hideCountdown();
 
+    // 清理当前注册邮箱
+    const currentEmail = GM_getValue('current_registration_email', null);
+    if (currentEmail) {
+      GM_deleteValue('current_registration_email');
+      getLogger().log(`🧹 已清理注册邮箱: ${currentEmail}`, 'info');
+    }
+
     // 如果当前在注册流程中，尝试停止
     if (window.location.href.includes('login.augmentcode.com') ||
         window.location.href.includes('auth.augmentcode.com')) {
@@ -5183,8 +5375,23 @@
         return true;
       }
 
-      // 检查是否有人机验证复选框
-      verifyCheckbox = document.querySelector('input[type="checkbox"]');
+      // 检查是否有人机验证复选框（排除脚本配置面板的复选框）
+      const allCheckboxes = document.querySelectorAll('input[type="checkbox"]');
+      verifyCheckbox = null;
+
+      for (const checkbox of allCheckboxes) {
+        // 排除脚本配置面板内的复选框
+        const isInConfigPanel = checkbox.closest('#augment-config-panel') ||
+                               checkbox.closest('.augment-config-group') ||
+                               checkbox.id.includes('api-email') ||
+                               checkbox.id.includes('custom-upload') ||
+                               checkbox.id.includes('cf-captcha');
+
+        if (!isInConfigPanel) {
+          verifyCheckbox = checkbox;
+          break;
+        }
+      }
 
       if (verifyCheckbox) {
         getLogger().log('发现人机验证复选框', 'info');
@@ -5214,54 +5421,59 @@
         continue;
       }
 
+      // 检查是否验证成功
+      const successText = Array.from(document.querySelectorAll('*')).find(el =>
+          el.textContent && el.textContent.includes('Success!')
+      );
+
+      if (successText && successText.textContent.includes('Success!')) {
+        if (successText.offsetParent !== null) {
+          logger.log('✅ 人机验证成功！检测到Success!标志', 'success');
+          return true;
+        } else {
+          logger.log('Success!文本存在但不可见，继续等待...', 'info');
+        }
+      }
 
 
-      // 检查是否验证失败或需要重新验证
-      const newCheckbox = document.querySelector('input[type="checkbox"]');
+      // 检查是否验证失败或需要重新验证（排除脚本配置面板的复选框）
+      const allNewCheckboxes = document.querySelectorAll('input[type="checkbox"]');
+      let newCheckbox = null;
+
+      for (const checkbox of allNewCheckboxes) {
+        // 排除脚本配置面板内的复选框
+        const isInConfigPanel = checkbox.closest('#augment-config-panel') ||
+                               checkbox.closest('.augment-config-group') ||
+                               checkbox.id.includes('api-email') ||
+                               checkbox.id.includes('custom-upload') ||
+                               checkbox.id.includes('cf-captcha');
+
+        if (!isInConfigPanel) {
+          newCheckbox = checkbox;
+          break;
+        }
+      }
+
       if (newCheckbox && !newCheckbox.checked) {
         getLogger().log('验证失败，需要重新验证', 'warning');
         newCheckbox.click();
         await new Promise(resolve => setTimeout(resolve, 2000));
         continue;
       }
-
-      // 严谨的验证完成检查逻辑
-      const currentCheckbox = document.querySelector('input[type="checkbox"]');
-      const successText = Array.from(document.querySelectorAll('*')).find(el =>
-          el.textContent && el.textContent.includes('Success!')
-      );
-
-      // 如果（页面没有复选框 或 复选框已经选择）并且有Success!文本 → 表示验证通过
-      if ((!currentCheckbox || currentCheckbox.checked) && successText) {
-        getLogger().log('✅ 人机验证通过！检测条件：复选框状态正常且有Success!文本', 'success');
-        return true;
-      }
-
-      // 否则需要等待并提示用户手动操作
-      if (i > 30) { // 30秒后开始提示手动操作
-        getLogger().log('⏳ 验证进行中，请手动完成人机验证...', 'info');
-      }
     }
 
-    // 最终检查验证状态 - 改进的检测逻辑
+    // 最终检查验证状态
     const finalSuccessText = Array.from(document.querySelectorAll('*')).find(
         el =>
             el.textContent && el.textContent.includes('Success!')
     );
 
-    if (finalSuccessText) {
-      getLogger().log('✅ 人机验证最终成功！检测到Success!文本', 'success');
+    if (finalSuccessText && finalSuccessText.offsetParent !== null) {
+      getLogger().log('人机验证最终成功！检测到Success!文本', 'success');
       return true;
     }
 
-    // 最终检查复选框状态
-    const finalCheckbox = document.querySelector('input[type="checkbox"]');
-    if (finalCheckbox && finalCheckbox.checked) {
-      getLogger().log('✅ 人机验证最终成功！复选框保持勾选状态', 'success');
-      return true;
-    }
-
-    getLogger().log('❌ 人机验证超时或失败 - 未检测到成功标志', 'error');
+    getLogger().log('人机验证超时或失败 - 未检测到Success!标志', 'error');
     return false;
   }
 
@@ -5816,6 +6028,13 @@
 
     } catch (error) {
       getLogger().log('处理subscription页面时出错: ' + error, 'error');
+    } finally {
+      // 清理当前注册邮箱，单次注册流程已完成
+      const currentEmail = GM_getValue('current_registration_email', null);
+      if (currentEmail) {
+        GM_deleteValue('current_registration_email');
+        getLogger().log(`🧹 已清理注册邮箱: ${currentEmail}`, 'info');
+      }
     }
   }
 
@@ -5909,8 +6128,7 @@
         getLogger().log('⚠️ 未找到预生成邮箱，生成新邮箱: ' + email, 'warning');
       } else {
         getLogger().log('✅ 使用预生成的OAuth邮箱: ' + email, 'success');
-        // 使用后清理，避免重复使用
-        GM_deleteValue('current_registration_email');
+        // 注意：邮箱将在整个注册流程完成后清理
       }
 
       getLogger().log('找到邮箱输入框，开始填写');
